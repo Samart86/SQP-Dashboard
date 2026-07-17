@@ -193,7 +193,7 @@ tr:last-child td{border-bottom:none}
     <input class="gate-input" type="password" id="gate-pwd" placeholder="••••••••" onkeydown="if(event.key==='Enter')checkPassword()" autocomplete="off" />
     <button class="gate-btn" onclick="checkPassword()">Access platform / Accéder</button>
     <div class="gate-err" id="gate-err"></div>
-    <div class="gate-hint">Contact Nathalie Behi for access · nathalie.behi@sazience.com</div>
+    <div class="gate-hint">Contact Samuel Arthur for access · samart.assistant@gmail.com</div>
   </div>
 </div>
 <div class="topbar">
@@ -909,11 +909,21 @@ function handleUpload(ev){
         var p1=wb.Sheets['P1_Pipeline'];
         var rows=p1?XLSX.utils.sheet_to_json(p1,{header:1}):[]; var mi=new Date().getMonth();
         var periodVal=rows[2]?String(Object.values(rows[2])[0]||''):'';
-        var allMonths=['january','february','march','april','may','june','july','august','september','october','november','december','janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
-        allMonths.forEach(function(m,idx){if(periodVal.toLowerCase().includes(m))mi=idx%12;});
+        // Extract just the period value — strip the label prefix
+        var periodClean = periodVal.replace(/Reporting period[^:]*:/i,'').replace(/Période[^:]*:/i,'').trim().toLowerCase();
+        var allMonths_en=['january','february','march','april','may','june','july','august','september','october','november','december'];
+        var allMonths_fr=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
+        var mi=new Date().getMonth(); // default to current month
+        var found=false;
+        // Check English months first
+        allMonths_en.forEach(function(m,idx){if(!found && periodClean.indexOf(m)>-1){mi=idx;found=true;}});
+        // Check French months if not found
+        if(!found)allMonths_fr.forEach(function(m,idx){if(!found && periodClean.indexOf(m)>-1){mi=idx;found=true;}});
+        // Also check year — default 2026 unless 2027 found
+        var yr=periodClean.includes('2027')?2027:2026;
         var parsed=parseMonthlyForm(wb,mi);
         if(!monthly[2026])monthly[2026]={};
-        var yr=2026; if(!monthly[yr])monthly[yr]={};
+        var yr=periodClean.includes('2027')?2027:2026; if(!monthly[yr])monthly[yr]={};
         monthly[yr][mi]=parsed;
         us.className='ustatus ok'; us.textContent=t().upload_ok(parsed['label_'+lang],file.name);
         var mkey=yr+'-'+mi;
@@ -999,7 +1009,7 @@ renderAll();
 
 // ── PASSWORD GATE ─────────────────────────────────────────────────────────────
 // Change this password to whatever you want before uploading to GitHub
-var PLATFORM_PASSWORD = '$QP2O26';
+var PLATFORM_PASSWORD = 'Sazience2026';
 
 function checkPassword() {
   var pwd = document.getElementById('gate-pwd').value;
