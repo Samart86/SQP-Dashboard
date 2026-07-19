@@ -902,37 +902,49 @@ function handleUpload(ev){
   var reader=new FileReader();
   reader.onload=function(e){
     try{
-      var wb=XLSX.read(e.target.result,{type:'array'});
+      var wb=XLSX.read(e.target.result,{type:'array',cellFormula:false,cellText:false});
       var isMonthly=wb.SheetNames.some(function(n){return/P1_Pipeline|P2_Revenue/i.test(n);});
-      var isQuarterly=wb.SheetNames.some(function(n){return/2026-Q[12]/i.test(n);});
+      var isQuarterly=wb.SheetNames.some(function(n){return/20\d\d-Q[1-4]/i.test(n);});
       if(isMonthly){
-        var p1=wb.Sheets['P1_Pipeline'];
-        var rows=p1?XLSX.utils.sheet_to_json(p1,{header:1}):[]; var mi=new Date().getMonth();
-        var periodVal=rows[2]?String(Object.values(rows[2])[0]||''):'';
-        // Extract just the period value — strip the label prefix
-        var periodClean = periodVal.replace(/Reporting period[^:]*:/i,'').replace(/Période[^:]*:/i,'').trim().toLowerCase();
-        var allMonths_en=['january','february','march','april','may','june','july','august','september','october','november','december'];
-        var allMonths_fr=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
-        var mi=new Date().getMonth(); // default to current month
-        var found=false;
-        // Check English months first
-        allMonths_en.forEach(function(m,idx){if(!found && periodClean.indexOf(m)>-1){mi=idx;found=true;}});
-        // Check French months if not found
-        if(!found)allMonths_fr.forEach(function(m,idx){if(!found && periodClean.indexOf(m)>-1){mi=idx;found=true;}});
-        // Also check year — default 2026 unless 2027 found
-        var yr=periodClean.includes('2027')?2027:2026;
-        var parsed=parseMonthlyForm(wb,mi);
-        if(!monthly[2026])monthly[2026]={};
-        var yr=periodClean.includes('2027')?2027:2026; if(!monthly[yr])monthly[yr]={};
+        // ── PERIOD DETECTION ──────────────────────────────────────────────────
+        // The sheet starts at col B (dim B1:Gxx), so XLSX.js sheet_to_json({header:1})
+        // returns col B as index 0, col C as index 1, etc.
+        // Period cell is B3 → rows[2][0] in XLSX.js arrays.
+        // To be safe, search ALL values in row 3 for the period string.
+        var p1ws=wb.Sheets['P1_Pipeline'];
+        var p1rows=p1ws?XLSX.utils.sheet_to_json(p1ws,{header:1,defval:null,raw:true}):[];
+        var mi=new Date().getMonth(); var yr=2026; var found=false;
+        var periodRaw='';
+        // Search every cell in row 3 (index 2) for the period string
+        if(p1rows[2]){
+          for(var ci2=0;ci2<p1rows[2].length;ci2++){
+            var cv=p1rows[2][ci2];
+            if(cv&&String(cv).indexOf('2026')>-1||cv&&String(cv).indexOf('2027')>-1){
+              periodRaw=String(cv); break;
+            }
+          }
+        }
+        // Extract month: take text after last colon, before first bracket
+        if(periodRaw){
+          var afterColon=periodRaw.lastIndexOf(':')>-1?periodRaw.substring(periodRaw.lastIndexOf(':')+1):periodRaw;
+          var beforeBracket=afterColon.indexOf('(')>-1?afterColon.substring(0,afterColon.indexOf('(')):afterColon;
+          var periodClean=beforeBracket.trim().toLowerCase();
+          var mens=['january','february','march','april','may','june','july','august','september','october','november','december'];
+          var mfrs=['janvier','f\xe9vrier','mars','avril','mai','juin','juillet','ao\xfbt','septembre','octobre','novembre','d\xe9cembre'];
+          for(var ei=0;ei<mens.length;ei++){if(periodClean.indexOf(mens[ei])>-1){mi=ei;found=true;break;}}
+          if(!found){for(var fi=0;fi<mfrs.length;fi++){if(periodClean.indexOf(mfrs[fi])>-1){mi=fi;found=true;break;}}}
+          yr=periodRaw.indexOf('2027')>-1?2027:2026;
+        }
+        var parsed=parseMonthlyForm(wb,mi,yr);
+        if(!monthly[yr])monthly[yr]={};
         monthly[yr][mi]=parsed;
         us.className='ustatus ok'; us.textContent=t().upload_ok(parsed['label_'+lang],file.name);
         var mkey=yr+'-'+mi;
-        if(mode!=='monthly')setMode('monthly'); else{currentPeriod=mkey;buildPeriodRow();switchPeriod(mkey);}
+        if(mode!=='monthly'){setMode('monthly');}else{currentPeriod=mkey;buildPeriodRow();switchPeriod(mkey);}
       } else if(isQuarterly){
         var qsheet=null,qname=null;
         wb.SheetNames.forEach(function(n){if(/20\d\d-Q[1-4]/i.test(n)){qsheet=wb.Sheets[n];qname=n;}});
         if(!qsheet)throw new Error('Quarter sheet not found');
-        // Parse year and quarter from sheet name e.g. 2026-Q2
         var qparts=qname.match(/(\d{4})-Q([1-4])/i);
         var qyr=qparts?qparts[1]:'2026'; var qnum=qparts?qparts[2]:'2';
         var qkey=qyr+'-Q'+qnum;
@@ -946,52 +958,129 @@ function handleUpload(ev){
   reader.readAsArrayBuffer(file);
 }
 
-function safeN(v){return(v!==null&&v!==undefined&&!isNaN(Number(v)))?Number(v):0;}
-function sheetRows(ws){if(!ws)return[];var r=XLSX.utils.decode_range(ws['!ref']||'A1:K50');var rows=[];for(var ri=r.s.r;ri<=r.e.r;ri++){var row=[];for(var ci=r.s.c;ci<=r.e.c;ci++){var cell=ws[XLSX.utils.encode_cell({r:ri,c:ci})];row.push(cell?cell.v:null);}rows.push(row);}return rows;}
-function findArea(rows,name){for(var i=0;i<rows.length;i++)for(var j=0;j<rows[i].length;j++)if(rows[i][j]&&String(rows[i][j]).toLowerCase().includes(name.toLowerCase()))return rows[i];return null;}
-function parseArea(rows,name,tc,ac){var r=findArea(rows,name)||[];return{t:safeN(r[tc])||0,a:safeN(r[ac])||0};}
+function parseMonthlyForm(wb,mi,yr){
+  // ── VERIFIED COLUMN MAP (from actual Excel XML analysis) ──────────────────
+  // All sheets start at col B. XLSX.js sheet_to_json({header:1}) maps B→[0], C→[1] etc.
+  // Row layout (all sheets): row[0]=title, row[1]=owners, row[2]=period, row[3]=headers, row[4..]=data
+  // P1: [0]=area [1]=owner [2]=target [3]=achieved [4]=rate
+  // P2: [0]=area [1]=owner [2]=target [3]=invoiced [4]=backlog [5]=rate
+  // P3: [0]=area [1]=owner [2]=target [3]=TCV [4]=deals [5]=rate
+  // P4: [0]=area [1]=owner [2]=peoplecost [3]=nonpeople [4]=totalcost [5]=revenue [6]=rate
+  // P5: [0]=type [1]=owner [2]=target [3]=hires [4]=rate [5]=filled [6]=notes
+  // P6: [0]=region [1]=owner [2]=target [3]=achieved [4]=rate [5]=solution
+  // P7: [0]=area [1]=owner [2]=ov90_eur [3]=ov90_pct [4]=top5_eur [5]=top5_pct [6]=dso [7]=dues
+  // P8: [0]=country [1]=owner [2]=consulting [3]=licencing [4]=wontobe [5]=total
 
-function parseMonthlyForm(wb,mi){
-  var months_en=['January','February','March','April','May','June','July','August','September','October','November','December'];
-  var months_fr=['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
-  var p1=sheetRows(wb.Sheets['P1_Pipeline']);
-  var p2=sheetRows(wb.Sheets['P2_Revenue']);
-  var p3=sheetRows(wb.Sheets['P3_TCV']);
-  var p4=sheetRows(wb.Sheets['P4_SGA']);
-  var p5=sheetRows(wb.Sheets['P5_Hirings']);
-  var p6=sheetRows(wb.Sheets['P6_MarketExp']);
-  var p7=sheetRows(wb.Sheets['P7_Cash']);
-  var p8=sheetRows(wb.Sheets['P8_Backlog']);
+  yr=yr||2026;
+  var MEN=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  var MFR=['Janvier','F\xe9vrier','Mars','Avril','Mai','Juin','Juillet','Ao\xfbt','Septembre','Octobre','Novembre','D\xe9cembre'];
 
-  var pip={ci:parseArea(p1,'CI',3,4),cam:parseArea(p1,'CAM',3,4),egypt:parseArea(p1,'Egypt',3,4),uae:parseArea(p1,'UAE',3,4),global:{t:0,a:0}};
-  ['ci','cam','egypt','uae'].forEach(function(k){pip.global.t+=pip[k].t;pip.global.a+=pip[k].a;});
+  function N(v){if(v===null||v===undefined||v==='')return 0;var n=Number(v);return isNaN(n)?0:n;}
 
-  var rev={ci:{t:safeN((findArea(p2,'CI')||[])[3]),a:safeN((findArea(p2,'CI')||[])[4]),bl:safeN((findArea(p2,'CI')||[])[5])},cam:{t:safeN((findArea(p2,'CAM')||[])[3]),a:safeN((findArea(p2,'CAM')||[])[4]),bl:safeN((findArea(p2,'CAM')||[])[5])},egypt:{t:safeN((findArea(p2,'Egypt')||[])[3]),a:safeN((findArea(p2,'Egypt')||[])[4]),bl:safeN((findArea(p2,'Egypt')||[])[5])},uae:{t:0,a:0,bl:0},global:{t:0,a:0,bl:0}};
-  ['ci','cam','egypt'].forEach(function(k){rev.global.t+=rev[k].t;rev.global.a+=rev[k].a;rev.global.bl+=rev[k].bl;});
+  function getRows(name){
+    var ws=wb.Sheets[name]; if(!ws)return[];
+    return XLSX.utils.sheet_to_json(ws,{header:1,defval:null,raw:true});
+  }
 
-  var tcv={ci:parseArea(p3,'CI',3,4),cam:parseArea(p3,'CAM',3,4),egypt:parseArea(p3,'Egypt',3,4),uae:parseArea(p3,'UAE',3,4),global:{t:0,a:0}};
-  ['ci','cam','egypt','uae'].forEach(function(k){tcv.global.t+=tcv[k].t;tcv.global.a+=tcv[k].a;});
+  // Find a data row by matching col[0] (area/type/region) case-insensitively
+  function findRow(rows,name){
+    var nl=name.toLowerCase();
+    for(var i=0;i<rows.length;i++){
+      var v=rows[i][0];
+      if(v&&String(v).toLowerCase().indexOf(nl)>-1) return rows[i];
+    }
+    return [];
+  }
 
-  function sgaArea(rows,name){var r=findArea(rows,name)||[];var cost=safeN(r[5]);var rev2=safeN(r[6]);return{t:.30,a:rev2>0?cost/rev2:0};}
-  var sga={ci:sgaArea(p4,'CI'),cam:sgaArea(p4,'CAM'),egypt:sgaArea(p4,'Egypt'),uae:sgaArea(p4,'UAE'),global:{t:.30,a:0}};
-  var tc=0,tr=0;['CI','CAM','Egypt','UAE'].forEach(function(n){var r=findArea(p4,n)||[];tc+=safeN(r[5]);tr+=safeN(r[6]);});
-  sga.global.a=tr>0?tc/tr:0;
+  var r1=getRows('P1_Pipeline');
+  var r2=getRows('P2_Revenue');
+  var r3=getRows('P3_TCV');
+  var r4=getRows('P4_SGA');
+  var r5=getRows('P5_Hirings');
+  var r6=getRows('P6_MarketExp');
+  var r7=getRows('P7_Cash');
+  var r8=getRows('P8_Backlog');
 
-  var hi={internal:{t:safeN((findArea(p5,'Internal')||[])[3])||3,a:safeN((findArea(p5,'Internal')||[])[4])},outsourcing:{t:safeN((findArea(p5,'Outsourcing')||[])[3])||3,a:safeN((findArea(p5,'Outsourcing')||[])[4])},total:{t:0,a:0}};
-  hi.total.t=hi.internal.t+hi.outsourcing.t; hi.total.a=hi.internal.a+hi.outsourcing.a;
+  // P1 PIPELINE: [0]=area [2]=target [3]=achieved
+  var pip={ci:{},cam:{},egypt:{},uae:{},global:{}};
+  ['CI','CAM','Egypt','UAE'].forEach(function(a){
+    var r=findRow(r1,a); var k=a.toLowerCase();
+    pip[k]={t:N(r[2]),a:N(r[3])};
+  });
+  pip.global={t:pip.ci.t+pip.cam.t+pip.egypt.t+pip.uae.t,
+              a:pip.ci.a+pip.cam.a+pip.egypt.a+pip.uae.a};
 
-  var mkt={africa:{t:safeN((findArea(p6,'Africa')||[])[3])||100000,a:safeN((findArea(p6,'Africa')||[])[4])},me:{t:safeN((findArea(p6,'Middle East')||[])[3])||66667,a:safeN((findArea(p6,'Middle East')||[])[4])},total:{t:0,a:0}};
-  mkt.total.t=mkt.africa.t+mkt.me.t; mkt.total.a=mkt.africa.a+mkt.me.a;
+  // P2 REVENUE: [0]=area [2]=target [3]=invoiced [4]=backlog
+  var rev={ci:{},cam:{},egypt:{},uae:{t:0,a:0,bl:0},global:{}};
+  ['CI','CAM','Egypt'].forEach(function(a){
+    var r=findRow(r2,a); var k=a.toLowerCase();
+    rev[k]={t:N(r[2]),a:N(r[3]),bl:N(r[4])};
+  });
+  rev.global={t:rev.ci.t+rev.cam.t+rev.egypt.t,
+              a:rev.ci.a+rev.cam.a+rev.egypt.a,
+              bl:rev.ci.bl+rev.cam.bl+rev.egypt.bl};
 
-  function cashArea(rows,name){var r=findArea(rows,name)||[];return{dso:safeN(r[7])||0,ov90:safeN(r[4])||0,top5:safeN(r[6])||0,dues:safeN(r[8])||0};}
-  var cash={ci:cashArea(p7,'CI'),cam:cashArea(p7,'CAM'),egypt:cashArea(p7,'Egypt'),global:{dso:0,dues:0}};
-  cash.global.dso=Math.round((cash.ci.dso+cash.cam.dso+cash.egypt.dso)/3);
-  cash.global.dues=cash.ci.dues+cash.cam.dues+cash.egypt.dues;
+  // P3 TCV: [0]=area [2]=target [3]=TCV [4]=deals
+  var tcv={ci:{},cam:{},egypt:{},uae:{},global:{}};
+  ['CI','CAM','Egypt','UAE'].forEach(function(a){
+    var r=findRow(r3,a); var k=a.toLowerCase();
+    tcv[k]={t:N(r[2]),a:N(r[3]),deals:N(r[4])};
+  });
+  tcv.global={t:tcv.ci.t+tcv.cam.t+tcv.egypt.t+tcv.uae.t,
+              a:tcv.ci.a+tcv.cam.a+tcv.egypt.a+tcv.uae.a};
 
-  var blCI=safeN((findArea(p8,'CI')||[])[6]),blCAM=safeN((findArea(p8,'CAM')||[])[6]),blEG=safeN((findArea(p8,'Egypt')||[])[6]);
-  var bl={ci:blCI,cam:blCAM,egypt:blEG,uae:0,me:0,global:blCI+blCAM+blEG};
+  // P4 SGA: [0]=area [2]=peoplecost [3]=nonpeople [4]=totalcost [5]=revenue [6]=rate
+  var sga={ci:{},cam:{},egypt:{},uae:{},global:{}};
+  ['CI','CAM','Egypt','UAE'].forEach(function(a){
+    var r=findRow(r4,a); var k=a.toLowerCase();
+    var rate=N(r[6]); var cost=N(r[4]); var rev2=N(r[5]);
+    if(rate===0&&rev2>0) rate=cost/rev2;
+    sga[k]={t:0.30,a:rate};
+  });
+  var tr=findRow(r4,'TOTAL');
+  var grate=N(tr[6]); if(grate===0&&N(tr[5])>0)grate=N(tr[4])/N(tr[5]);
+  sga.global={t:0.30,a:grate};
 
-  return{label_en:months_en[mi]+' 2026',label_fr:months_fr[mi]+' 2026',source:'excel-upload',pipeline:pip,revenue:rev,tcv:tcv,sga:sga,hirings:hi,market:mkt,cash:cash,backlog:bl};
+  // P5 HIRINGS: [0]=type [2]=target [3]=hires [5]=filled
+  var irow=findRow(r5,'Internal'); var orow=findRow(r5,'Outsourcing');
+  var hirings={
+    internal:{t:N(irow[2])||10,a:N(irow[3]),filled:String(irow[5]||'')},
+    outsourcing:{t:N(orow[2])||10,a:N(orow[3]),filled:String(orow[5]||'')},
+    total:{t:0,a:0}
+  };
+  hirings.total.t=hirings.internal.t+hirings.outsourcing.t;
+  hirings.total.a=hirings.internal.a+hirings.outsourcing.a;
+
+  // P6 MARKET: [0]=region [2]=target [3]=achieved [5]=solution
+  var afr=findRow(r6,'Africa'); var mer=findRow(r6,'Middle East');
+  var market={
+    africa:{t:N(afr[2]),a:N(afr[3]),solution:String(afr[5]||'')},
+    me:{t:N(mer[2]),a:N(mer[3]),solution:String(mer[5]||'')},
+    total:{t:0,a:0}
+  };
+  market.total.t=market.africa.t+market.me.t;
+  market.total.a=market.africa.a+market.me.a;
+
+  // P7 DSO: [0]=area [2]=ov90_eur [3]=ov90_pct [4]=top5_eur [5]=top5_pct [6]=dso [7]=dues
+  function cRow(name){
+    var r=findRow(r7,name);
+    return{dso:N(r[6]),ov90:N(r[3]),top5:N(r[5]),ov90_eur:N(r[2]),top5_eur:N(r[4]),dues:N(r[7])};
+  }
+  var cCI=cRow('CI'); var cCAM=cRow('CAM'); var cEG=cRow('Egypt');
+  var avgDSO=Math.round((cCI.dso+cCAM.dso+cEG.dso)/3);
+  var cash={ci:cCI,cam:cCAM,egypt:cEG,global:{dso:avgDSO,dues:cCI.dues+cCAM.dues+cEG.dues}};
+
+  // P8 BACKLOG: [0]=country [2]=consulting [3]=licencing [4]=wontobe [5]=total
+  function bRow(name){
+    var r=findRow(r8,name);
+    var tot=N(r[5]); if(tot===0)tot=N(r[2])+N(r[3])+N(r[4]);
+    return tot;
+  }
+  var blCI=bRow('CI'),blCAM=bRow('CAM'),blEG=bRow('Egypt'),blUAE=bRow('UAE');
+  var backlog={ci:blCI,cam:blCAM,egypt:blEG,uae:blUAE,me:0,global:blCI+blCAM+blEG+blUAE};
+
+  return{label_en:MEN[mi]+' '+yr,label_fr:MFR[mi]+' '+yr,source:'excel-upload',
+         pipeline:pip,revenue:rev,tcv:tcv,sga:sga,hirings:hirings,market:market,cash:cash,backlog:backlog};
 }
 
 function parseQuarterlySheet(ws,q,wb){
@@ -1009,7 +1098,7 @@ renderAll();
 
 // ── PASSWORD GATE ─────────────────────────────────────────────────────────────
 // Change this password to whatever you want before uploading to GitHub
-var PLATFORM_PASSWORD = '$QP2O26';
+var PLATFORM_PASSWORD = 'Sazience2026';
 
 function checkPassword() {
   var pwd = document.getElementById('gate-pwd').value;
@@ -1046,7 +1135,7 @@ function checkPassword() {
 
 
 
-var COORDINATOR_EMAIL = "nathalie.behi@sazience.com";
+var COORDINATOR_EMAIL = "samart.assistant@gmail.com";
 var currentPulse = null;
 var currentFormData = {};
 var submissions = JSON.parse(localStorage.getItem('sqp_submissions') || '[]');
