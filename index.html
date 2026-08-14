@@ -941,6 +941,9 @@ function handleUpload(ev){
         us.className='ustatus ok'; us.textContent=t().upload_ok(parsed['label_'+lang],file.name);
         var mkey=yr+'-'+mi;
         if(mode!=='monthly'){setMode('monthly');}else{currentPeriod=mkey;buildPeriodRow();switchPeriod(mkey);}
+        // Save to cloud
+        showCloudStatus(lang==='fr'?'Sauvegarde en cours...':'Saving to cloud...','');
+        jsonbinSave({}, function(ok){ showCloudStatus(ok?(lang==='fr'?'✓ Sauvegardé pour tous':'✓ Saved for all users'):(lang==='fr'?'⚠ Sauvegarde échouée':'⚠ Cloud save failed'), ok?'ok':'err'); });
       } else if(isQuarterly){
         var qsheet=null,qname=null;
         wb.SheetNames.forEach(function(n){if(/20\d\d-Q[1-4]/i.test(n)){qsheet=wb.Sheets[n];qname=n;}});
@@ -951,6 +954,9 @@ function handleUpload(ev){
         quarterly[qkey]=parseQuarterlySheet(qsheet,'Q'+qnum,wb);
         us.className='ustatus ok'; us.textContent=t().upload_ok('Q'+qnum+' '+qyr,file.name);
         if(mode!=='quarterly')setMode('quarterly'); else{currentPeriod=qkey;buildPeriodRow();switchPeriod(qkey);}
+        // Save to cloud
+        showCloudStatus(lang==='fr'?'Sauvegarde en cours...':'Saving to cloud...','');
+        jsonbinSave({}, function(ok){ showCloudStatus(ok?(lang==='fr'?'✓ Sauvegardé pour tous':'✓ Saved for all users'):(lang==='fr'?'⚠ Sauvegarde échouée':'⚠ Cloud save failed'), ok?'ok':'err'); });
       } else {throw new Error('Unrecognised file format.');}
     }catch(err){us.className='ustatus err';us.textContent=t().upload_err(err.message);}
     ev.target.value='';
@@ -1091,10 +1097,116 @@ function parseQuarterlySheet(ws,q,wb){
     hirings:base.hirings,market:base.market,cash:base.cash,backlog:base.backlog};
 }
 
+// ── JSONBIN CLOUD STORAGE ─────────────────────────────────────────────────────
+var JSONBIN_KEY = '$2a$10$Q.QBIew1w/UNnYqeqOIjqOMTQlx5zdGSNmm.Rgk1NWIhA3oyv6Z7i';
+var JSONBIN_BIN_ID = null; // Will be created on first save or loaded from localStorage
+
+function jsonbinSave(data, callback) {
+  // Save the full data store to JSONBin
+  var payload = {
+    monthly: monthly,
+    quarterly: quarterly,
+    submissions: submissions,
+    savedAt: new Date().toISOString()
+  };
+  var binId = localStorage.getItem('sqp_bin_id');
+  var url, method;
+  if(binId) {
+    url = 'https://api.jsonbin.io/v3/b/' + binId;
+    method = 'PUT';
+  } else {
+    url = 'https://api.jsonbin.io/v3/b';
+    method = 'POST';
+  }
+  var xhr = new XMLHttpRequest();
+  xhr.open(method, url, true);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.setRequestHeader('X-Master-Key', JSONBIN_KEY);
+  if(method === 'POST') {
+    xhr.setRequestHeader('X-Bin-Name', 'SQP-Platform-Data');
+    xhr.setRequestHeader('X-Bin-Private', 'true');
+  }
+  xhr.onload = function() {
+    if(xhr.status >= 200 && xhr.status < 300) {
+      var resp = JSON.parse(xhr.responseText);
+      var id = resp.metadata ? resp.metadata.id : (resp.record ? resp.record.id : null);
+      if(id) {
+        localStorage.setItem('sqp_bin_id', id);
+        JSONBIN_BIN_ID = id;
+      }
+      if(callback) callback(true);
+    } else {
+      if(callback) callback(false, xhr.responseText);
+    }
+  };
+  xhr.onerror = function(){ if(callback) callback(false, 'Network error'); };
+  try{ xhr.send(JSON.stringify(payload)); }catch(e){ if(callback) callback(false, e.message); }
+}
+
+function jsonbinLoad(callback) {
+  var binId = localStorage.getItem('sqp_bin_id');
+  if(!binId){ if(callback) callback(false); return; }
+  var xhr = new XMLHttpRequest();
+  xhr.open('GET', 'https://api.jsonbin.io/v3/b/' + binId + '/latest', true);
+  xhr.setRequestHeader('X-Master-Key', JSONBIN_KEY);
+  xhr.onload = function() {
+    if(xhr.status === 200) {
+      try {
+        var resp = JSON.parse(xhr.responseText);
+        var data = resp.record;
+        if(data) {
+          // Restore monthly data
+          if(data.monthly) {
+            Object.keys(data.monthly).forEach(function(yr) {
+              monthly[yr] = monthly[yr] || {};
+              Object.keys(data.monthly[yr]).forEach(function(mi) {
+                monthly[yr][mi] = data.monthly[yr][mi];
+              });
+            });
+          }
+          // Restore quarterly data (don't overwrite seeded Q1)
+          if(data.quarterly) {
+            Object.keys(data.quarterly).forEach(function(qk) {
+              if(data.quarterly[qk] && qk !== '2026-Q1') {
+                quarterly[qk] = data.quarterly[qk];
+              }
+            });
+          }
+          // Restore submissions
+          if(data.submissions) submissions = data.submissions;
+          if(callback) callback(true);
+        } else { if(callback) callback(false); }
+      } catch(e){ if(callback) callback(false); }
+    } else { if(callback) callback(false); }
+  };
+  xhr.onerror = function(){ if(callback) callback(false); };
+  xhr.send();
+}
+
+function showCloudStatus(msg, type) {
+  var el = document.getElementById('ustatus');
+  if(!el) return;
+  el.className = 'ustatus ' + (type||'');
+  el.textContent = msg;
+  if(type === 'ok') setTimeout(function(){ el.textContent=''; }, 4000);
+}
+
 // ── INIT ──────────────────────────────────────────────────────────────────────
 applyTranslations();
 buildPeriodRow();
 renderAll();
+
+// Load cloud data on startup
+showCloudStatus(lang==='fr'?'Chargement des données...':'Loading data...','');
+jsonbinLoad(function(success) {
+  if(success) {
+    buildPeriodRow();
+    renderAll();
+    showCloudStatus(lang==='fr'?'Données chargées ✓':'Data loaded ✓','ok');
+  } else {
+    showCloudStatus('','');
+  }
+});
 
 // ── PASSWORD GATE ─────────────────────────────────────────────────────────────
 // Change this password to whatever you want before uploading to GitHub
@@ -1383,6 +1495,9 @@ function submitForm() {
   // Save to localStorage
   submissions.push(sub);
   localStorage.setItem('sqp_submissions', JSON.stringify(submissions));
+
+  // Save to cloud
+  jsonbinSave({}, function(ok){ if(!ok) console.log('Cloud save failed for submission'); });
 
   // Update dashboard data
   applySubmissionToDashboard(sub);
